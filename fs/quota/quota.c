@@ -115,17 +115,27 @@ static int quota_setinfo(struct super_block *sb, int type, void __user *addr)
 	return sb->s_qcop->set_info(sb, type, &info);
 }
 
-static void copy_to_if_dqblk(struct if_dqblk *dst, struct fs_disk_quota *src)
+static inline qsize_t qbtos(qsize_t blocks)
+{
+	return blocks << QIF_DQBLKSIZE_BITS;
+}
+
+static inline qsize_t stoqb(qsize_t space)
+{
+	return (space + QIF_DQBLKSIZE - 1) >> QIF_DQBLKSIZE_BITS;
+}
+
+static void copy_to_if_dqblk(struct if_dqblk *dst, struct qc_dqblk *src)
 {
 	memset(dst, 0, sizeof(*dst));
-	dst->dqb_bhardlimit = src->d_blk_hardlimit;
-	dst->dqb_bsoftlimit = src->d_blk_softlimit;
-	dst->dqb_curspace = src->d_bcount;
+	dst->dqb_bhardlimit = stoqb(src->d_spc_hardlimit);
+	dst->dqb_bsoftlimit = stoqb(src->d_spc_softlimit);
+	dst->dqb_curspace = src->d_space;
 	dst->dqb_ihardlimit = src->d_ino_hardlimit;
 	dst->dqb_isoftlimit = src->d_ino_softlimit;
-	dst->dqb_curinodes = src->d_icount;
-	dst->dqb_btime = src->d_btimer;
-	dst->dqb_itime = src->d_itimer;
+	dst->dqb_curinodes = src->d_ino_count;
+	dst->dqb_btime = src->d_spc_timer;
+	dst->dqb_itime = src->d_ino_timer;
 	dst->dqb_valid = QIF_ALL;
 }
 
@@ -133,7 +143,7 @@ static int quota_getquota(struct super_block *sb, int type, qid_t id,
 			  void __user *addr)
 {
 	struct kqid qid;
-	struct fs_disk_quota fdq;
+	struct qc_dqblk fdq;
 	struct if_dqblk idq;
 	int ret;
 
@@ -151,36 +161,64 @@ static int quota_getquota(struct super_block *sb, int type, qid_t id,
 	return 0;
 }
 
-static void copy_from_if_dqblk(struct fs_disk_quota *dst, struct if_dqblk *src)
+/*
+ * Return quota for next active quota >= this id, if any exists,
+ * otherwise return -ENOENT via ->get_nextdqblk
+ */
+static int quota_getnextquota(struct super_block *sb, int type, qid_t id,
+			  void __user *addr)
 {
-	dst->d_blk_hardlimit = src->dqb_bhardlimit;
-	dst->d_blk_softlimit  = src->dqb_bsoftlimit;
-	dst->d_bcount = src->dqb_curspace;
+	struct kqid qid;
+	struct qc_dqblk fdq;
+	struct if_nextdqblk idq;
+	int ret;
+
+	if (!sb->s_qcop->get_nextdqblk)
+		return -ENOSYS;
+	qid = make_kqid(current_user_ns(), type, id);
+	if (!qid_valid(qid))
+		return -EINVAL;
+	ret = sb->s_qcop->get_nextdqblk(sb, &qid, &fdq);
+	if (ret)
+		return ret;
+	/* struct if_nextdqblk is a superset of struct if_dqblk */
+	copy_to_if_dqblk((struct if_dqblk *)&idq, &fdq);
+	idq.dqb_id = from_kqid(current_user_ns(), qid);
+	if (copy_to_user(addr, &idq, sizeof(idq)))
+		return -EFAULT;
+	return 0;
+}
+
+static void copy_from_if_dqblk(struct qc_dqblk *dst, struct if_dqblk *src)
+{
+	dst->d_spc_hardlimit = qbtos(src->dqb_bhardlimit);
+	dst->d_spc_softlimit = qbtos(src->dqb_bsoftlimit);
+	dst->d_space = src->dqb_curspace;
 	dst->d_ino_hardlimit = src->dqb_ihardlimit;
 	dst->d_ino_softlimit = src->dqb_isoftlimit;
-	dst->d_icount = src->dqb_curinodes;
-	dst->d_btimer = src->dqb_btime;
-	dst->d_itimer = src->dqb_itime;
+	dst->d_ino_count = src->dqb_curinodes;
+	dst->d_spc_timer = src->dqb_btime;
+	dst->d_ino_timer = src->dqb_itime;
 
 	dst->d_fieldmask = 0;
 	if (src->dqb_valid & QIF_BLIMITS)
-		dst->d_fieldmask |= FS_DQ_BSOFT | FS_DQ_BHARD;
+		dst->d_fieldmask |= QC_SPC_SOFT | QC_SPC_HARD;
 	if (src->dqb_valid & QIF_SPACE)
-		dst->d_fieldmask |= FS_DQ_BCOUNT;
+		dst->d_fieldmask |= QC_SPACE;
 	if (src->dqb_valid & QIF_ILIMITS)
-		dst->d_fieldmask |= FS_DQ_ISOFT | FS_DQ_IHARD;
+		dst->d_fieldmask |= QC_INO_SOFT | QC_INO_HARD;
 	if (src->dqb_valid & QIF_INODES)
-		dst->d_fieldmask |= FS_DQ_ICOUNT;
+		dst->d_fieldmask |= QC_INO_COUNT;
 	if (src->dqb_valid & QIF_BTIME)
-		dst->d_fieldmask |= FS_DQ_BTIMER;
+		dst->d_fieldmask |= QC_SPC_TIMER;
 	if (src->dqb_valid & QIF_ITIME)
-		dst->d_fieldmask |= FS_DQ_ITIMER;
+		dst->d_fieldmask |= QC_INO_TIMER;
 }
 
 static int quota_setquota(struct super_block *sb, int type, qid_t id,
 			  void __user *addr)
 {
-	struct fs_disk_quota fdq;
+	struct qc_dqblk fdq;
 	struct if_dqblk idq;
 	struct kqid qid;
 
@@ -244,10 +282,78 @@ static int quota_getxstatev(struct super_block *sb, void __user *addr)
 	return ret;
 }
 
+/*
+ * XFS defines BBTOB and BTOBB macros inside fs/xfs/ and we cannot move them
+ * out of there as xfsprogs rely on definitions being in that header file. So
+ * just define same functions here for quota purposes.
+ */
+#define XFS_BB_SHIFT 9
+
+static inline u64 quota_bbtob(u64 blocks)
+{
+	return blocks << XFS_BB_SHIFT;
+}
+
+static inline u64 quota_btobb(u64 bytes)
+{
+	return (bytes + (1 << XFS_BB_SHIFT) - 1) >> XFS_BB_SHIFT;
+}
+
+static void copy_from_xfs_dqblk(struct qc_dqblk *dst, struct fs_disk_quota *src)
+{
+	dst->d_spc_hardlimit = quota_bbtob(src->d_blk_hardlimit);
+	dst->d_spc_softlimit = quota_bbtob(src->d_blk_softlimit);
+	dst->d_ino_hardlimit = src->d_ino_hardlimit;
+	dst->d_ino_softlimit = src->d_ino_softlimit;
+	dst->d_space = quota_bbtob(src->d_bcount);
+	dst->d_ino_count = src->d_icount;
+	dst->d_ino_timer = src->d_itimer;
+	dst->d_spc_timer = src->d_btimer;
+	dst->d_ino_warns = src->d_iwarns;
+	dst->d_spc_warns = src->d_bwarns;
+	dst->d_rt_spc_hardlimit = quota_bbtob(src->d_rtb_hardlimit);
+	dst->d_rt_spc_softlimit = quota_bbtob(src->d_rtb_softlimit);
+	dst->d_rt_space = quota_bbtob(src->d_rtbcount);
+	dst->d_rt_spc_timer = src->d_rtbtimer;
+	dst->d_rt_spc_warns = src->d_rtbwarns;
+	dst->d_fieldmask = 0;
+	if (src->d_fieldmask & FS_DQ_ISOFT)
+		dst->d_fieldmask |= QC_INO_SOFT;
+	if (src->d_fieldmask & FS_DQ_IHARD)
+		dst->d_fieldmask |= QC_INO_HARD;
+	if (src->d_fieldmask & FS_DQ_BSOFT)
+		dst->d_fieldmask |= QC_SPC_SOFT;
+	if (src->d_fieldmask & FS_DQ_BHARD)
+		dst->d_fieldmask |= QC_SPC_HARD;
+	if (src->d_fieldmask & FS_DQ_RTBSOFT)
+		dst->d_fieldmask |= QC_RT_SPC_SOFT;
+	if (src->d_fieldmask & FS_DQ_RTBHARD)
+		dst->d_fieldmask |= QC_RT_SPC_HARD;
+	if (src->d_fieldmask & FS_DQ_BTIMER)
+		dst->d_fieldmask |= QC_SPC_TIMER;
+	if (src->d_fieldmask & FS_DQ_ITIMER)
+		dst->d_fieldmask |= QC_INO_TIMER;
+	if (src->d_fieldmask & FS_DQ_RTBTIMER)
+		dst->d_fieldmask |= QC_RT_SPC_TIMER;
+	if (src->d_fieldmask & FS_DQ_BWARNS)
+		dst->d_fieldmask |= QC_SPC_WARNS;
+	if (src->d_fieldmask & FS_DQ_IWARNS)
+		dst->d_fieldmask |= QC_INO_WARNS;
+	if (src->d_fieldmask & FS_DQ_RTBWARNS)
+		dst->d_fieldmask |= QC_RT_SPC_WARNS;
+	if (src->d_fieldmask & FS_DQ_BCOUNT)
+		dst->d_fieldmask |= QC_SPACE;
+	if (src->d_fieldmask & FS_DQ_ICOUNT)
+		dst->d_fieldmask |= QC_INO_COUNT;
+	if (src->d_fieldmask & FS_DQ_RTBCOUNT)
+		dst->d_fieldmask |= QC_RT_SPACE;
+}
+
 static int quota_setxquota(struct super_block *sb, int type, qid_t id,
 			   void __user *addr)
 {
 	struct fs_disk_quota fdq;
+	struct qc_dqblk qdq;
 	struct kqid qid;
 
 	if (copy_from_user(&fdq, addr, sizeof(fdq)))
@@ -257,13 +363,44 @@ static int quota_setxquota(struct super_block *sb, int type, qid_t id,
 	qid = make_kqid(current_user_ns(), type, id);
 	if (!qid_valid(qid))
 		return -EINVAL;
-	return sb->s_qcop->set_dqblk(sb, qid, &fdq);
+	copy_from_xfs_dqblk(&qdq, &fdq);
+	return sb->s_qcop->set_dqblk(sb, qid, &qdq);
+}
+
+static void copy_to_xfs_dqblk(struct fs_disk_quota *dst, struct qc_dqblk *src,
+			      int type, qid_t id)
+{
+	memset(dst, 0, sizeof(*dst));
+	dst->d_version = FS_DQUOT_VERSION;
+	dst->d_id = id;
+	if (type == USRQUOTA)
+		dst->d_flags = FS_USER_QUOTA;
+	else if (type == PRJQUOTA)
+		dst->d_flags = FS_PROJ_QUOTA;
+	else
+		dst->d_flags = FS_GROUP_QUOTA;
+	dst->d_blk_hardlimit = quota_btobb(src->d_spc_hardlimit);
+	dst->d_blk_softlimit = quota_btobb(src->d_spc_softlimit);
+	dst->d_ino_hardlimit = src->d_ino_hardlimit;
+	dst->d_ino_softlimit = src->d_ino_softlimit;
+	dst->d_bcount = quota_btobb(src->d_space);
+	dst->d_icount = src->d_ino_count;
+	dst->d_itimer = src->d_ino_timer;
+	dst->d_btimer = src->d_spc_timer;
+	dst->d_iwarns = src->d_ino_warns;
+	dst->d_bwarns = src->d_spc_warns;
+	dst->d_rtb_hardlimit = quota_btobb(src->d_rt_spc_hardlimit);
+	dst->d_rtb_softlimit = quota_btobb(src->d_rt_spc_softlimit);
+	dst->d_rtbcount = quota_btobb(src->d_rt_space);
+	dst->d_rtbtimer = src->d_rt_spc_timer;
+	dst->d_rtbwarns = src->d_rt_spc_warns;
 }
 
 static int quota_getxquota(struct super_block *sb, int type, qid_t id,
 			   void __user *addr)
 {
 	struct fs_disk_quota fdq;
+	struct qc_dqblk qdq;
 	struct kqid qid;
 	int ret;
 
@@ -272,8 +409,39 @@ static int quota_getxquota(struct super_block *sb, int type, qid_t id,
 	qid = make_kqid(current_user_ns(), type, id);
 	if (!qid_valid(qid))
 		return -EINVAL;
-	ret = sb->s_qcop->get_dqblk(sb, qid, &fdq);
-	if (!ret && copy_to_user(addr, &fdq, sizeof(fdq)))
+	ret = sb->s_qcop->get_dqblk(sb, qid, &qdq);
+	if (ret)
+		return ret;
+	copy_to_xfs_dqblk(&fdq, &qdq, type, id);
+	if (copy_to_user(addr, &fdq, sizeof(fdq)))
+		return -EFAULT;
+	return ret;
+}
+
+/*
+ * Return quota for next active quota >= this id, if any exists,
+ * otherwise return -ENOENT via ->get_nextdqblk.
+ */
+static int quota_getnextxquota(struct super_block *sb, int type, qid_t id,
+			    void __user *addr)
+{
+	struct fs_disk_quota fdq;
+	struct qc_dqblk qdq;
+	struct kqid qid;
+	qid_t id_out;
+	int ret;
+
+	if (!sb->s_qcop->get_nextdqblk)
+		return -ENOSYS;
+	qid = make_kqid(current_user_ns(), type, id);
+	if (!qid_valid(qid))
+		return -EINVAL;
+	ret = sb->s_qcop->get_nextdqblk(sb, &qid, &qdq);
+	if (ret)
+		return ret;
+	id_out = from_kqid(current_user_ns(), qid);
+	copy_to_xfs_dqblk(&fdq, &qdq, type, id_out);
+	if (copy_to_user(addr, &fdq, sizeof(fdq)))
 		return -EFAULT;
 	return ret;
 }
@@ -319,6 +487,8 @@ static int do_quotactl(struct super_block *sb, int type, int cmd, qid_t id,
 		return quota_setinfo(sb, type, addr);
 	case Q_GETQUOTA:
 		return quota_getquota(sb, type, id, addr);
+	case Q_GETNEXTQUOTA:
+		return quota_getnextquota(sb, type, id, addr);
 	case Q_SETQUOTA:
 		return quota_setquota(sb, type, id, addr);
 	case Q_SYNC:
@@ -338,6 +508,8 @@ static int do_quotactl(struct super_block *sb, int type, int cmd, qid_t id,
 		return quota_setxquota(sb, type, id, addr);
 	case Q_XGETQUOTA:
 		return quota_getxquota(sb, type, id, addr);
+	case Q_XGETNEXTQUOTA:
+		return quota_getnextxquota(sb, type, id, addr);
 	case Q_XQUOTASYNC:
 		if (sb->s_flags & MS_RDONLY)
 			return -EROFS;
@@ -353,6 +525,11 @@ static int do_quotactl(struct super_block *sb, int type, int cmd, qid_t id,
 /* Return 1 if 'cmd' will block on frozen filesystem */
 static int quotactl_cmd_write(int cmd)
 {
+	/*
+	 * We cannot allow Q_GETQUOTA and Q_GETNEXTQUOTA without write access
+	 * as dquot_acquire() may allocate space for new structure and OCFS2
+	 * needs to increment on-disk use count.
+	 */
 	switch (cmd) {
 	case Q_GETFMT:
 	case Q_GETINFO:
@@ -360,6 +537,7 @@ static int quotactl_cmd_write(int cmd)
 	case Q_XGETQSTAT:
 	case Q_XGETQSTATV:
 	case Q_XGETQUOTA:
+	case Q_XGETNEXTQUOTA:
 	case Q_XQUOTASYNC:
 		return 0;
 	}

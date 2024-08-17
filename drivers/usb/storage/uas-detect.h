@@ -9,7 +9,8 @@ static int uas_is_interface(struct usb_host_interface *intf)
 		intf->desc.bInterfaceProtocol == USB_PR_UAS);
 }
 
-static int uas_find_uas_alt_setting(struct usb_interface *intf)
+static struct usb_host_interface *uas_find_uas_alt_setting(  
+		struct usb_interface *intf)  
 {
 	int i;
 
@@ -17,10 +18,10 @@ static int uas_find_uas_alt_setting(struct usb_interface *intf)
 		struct usb_host_interface *alt = &intf->altsetting[i];
 
 		if (uas_is_interface(alt))
-			return alt->desc.bAlternateSetting;
+			return alt;
 	}
 
-	return -ENODEV;
+	return NULL;
 }
 
 static int uas_find_endpoints(struct usb_host_interface *alt,
@@ -51,20 +52,21 @@ static int uas_find_endpoints(struct usb_host_interface *alt,
 }
 
 static int uas_use_uas_driver(struct usb_interface *intf,
-			      const struct usb_device_id *id)
+			      const struct usb_device_id *id,
+			      unsigned long *flags_ret)
 {
 	struct usb_host_endpoint *eps[4] = { };
 	struct usb_device *udev = interface_to_usbdev(intf);
 	struct usb_hcd *hcd = bus_to_hcd(udev->bus);
 	unsigned long flags = id->driver_info;
-	int r, alt;
-
+	struct usb_host_interface *alt; 
+	int r; 
 
 	alt = uas_find_uas_alt_setting(intf);
-	if (alt < 0)
+	if (!alt)
 		return 0;
 
-	r = uas_find_endpoints(&intf->altsetting[alt], eps);
+	r = uas_find_endpoints(alt, eps);
 	if (r < 0)
 		return 0;
 
@@ -80,8 +82,15 @@ static int uas_use_uas_driver(struct usb_interface *intf,
 			flags |= US_FL_IGNORE_UAS;
 		} else if (usb_ss_max_streams(&eps[1]->ss_ep_comp) == 32) {
 			flags |= US_FL_IGNORE_UAS;
+		} else {
+			/* ASM1053, these have issues with large transfers */
+			flags |= US_FL_MAX_SECTORS_240;
 		}
 	}
+
+	/* All Seagate disk enclosures have broken ATA pass-through support */
+	if (le16_to_cpu(udev->descriptor.idVendor) == 0x0bc2)
+		flags |= US_FL_NO_ATA_1X;
 
 	usb_stor_adjust_quirks(udev, &flags);
 
@@ -108,6 +117,9 @@ static int uas_use_uas_driver(struct usb_interface *intf,
 			"Please try an other USB controller if you wish to use UAS.\n");
 		return 0;
 	}
+
+	if (flags_ret)
+		*flags_ret = flags;
 
 	return 1;
 }

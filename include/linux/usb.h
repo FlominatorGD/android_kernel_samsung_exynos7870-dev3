@@ -125,12 +125,7 @@ enum usb_interface_condition {
  * @dev: driver model's view of this device
  * @usb_dev: if an interface is bound to the USB major, this will point
  *	to the sysfs representation for that device.
- * @pm_usage_cnt: PM usage counter for this interface
  * @reset_ws: Used for scheduling resets from atomic context.
- * @reset_running: set to 1 if the interface is currently running a
- *      queued reset so that usb_cancel_queued_reset() doesn't try to
- *      remove from the workqueue when running inside the worker
- *      thread. See __usb_queue_reset_device().
  * @resetting_device: USB core reset the device, so use alt setting 0 as
  *	current; needs bandwidth alloc after reset.
  *
@@ -181,7 +176,6 @@ struct usb_interface {
 	unsigned needs_remote_wakeup:1;	/* driver requires remote wakeup */
 	unsigned needs_altsetting0:1;	/* switch to altsetting 0 is pending */
 	unsigned needs_binding:1;	/* needs delayed unbind/rebind */
-	unsigned reset_running:1;
 	unsigned resetting_device:1;	/* true: bandwidth alloc after reset */
 
 	struct device dev;		/* interface specific device info */
@@ -209,6 +203,32 @@ void usb_put_intf(struct usb_interface *intf);
 /* this maximum is arbitrary */
 #define USB_MAXINTERFACES	32
 #define USB_MAXIADS		(USB_MAXINTERFACES/2)
+
+/*
+ * USB Resume Timer: Every Host controller driver should drive the resume
+ * signalling on the bus for the amount of time defined by this macro.
+ *
+ * That way we will have a 'stable' behavior among all HCDs supported by Linux.
+ *
+ * Note that the USB Specification states we should drive resume for *at least*
+ * 20 ms, but it doesn't give an upper bound. This creates two possible
+ * situations which we want to avoid:
+ *
+ * (a) sometimes an msleep(20) might expire slightly before 20 ms, which causes
+ * us to fail USB Electrical Tests, thus failing Certification
+ *
+ * (b) Some (many) devices actually need more than 20 ms of resume signalling,
+ * and while we can argue that's against the USB Specification, we don't have
+ * control over which devices a certification laboratory will be using for
+ * certification. If CertLab uses a device which was tested against Windows and
+ * that happens to have relaxed resume signalling rules, we might fall into
+ * situations where we fail interoperability and electrical tests.
+ *
+ * In order to avoid both conditions, we're using a 40 ms resume timeout, which
+ * should cope with both LPJ calibration errors and devices not following every
+ * detail of the USB Specification.
+ */
+#define USB_RESUME_TIMEOUT	40 /* ms */
 
 /**
  * struct usb_interface_cache - long-term representation of a device interface
@@ -308,11 +328,11 @@ struct usb_host_bos {
 };
 
 int __usb_get_extra_descriptor(char *buffer, unsigned size,
-	unsigned char type, void **ptr);
+	unsigned char type, void **ptr, size_t min);
 #define usb_get_extra_descriptor(ifpoint, type, ptr) \
 				__usb_get_extra_descriptor((ifpoint)->extra, \
 				(ifpoint)->extralen, \
-				type, (void **)ptr)
+				type, (void **)ptr, sizeof(**(ptr)))
 
 /* ----------------------------------------------------------------------- */
 
@@ -346,13 +366,12 @@ struct usb_bus {
 
 	int devnum_next;		/* Next open device number in
 					 * round-robin allocation */
+	struct mutex devnum_next_mutex; /* devnum_next mutex */
 
 	struct usb_devmap devmap;	/* device address allocation map */
 	struct usb_device *root_hub;	/* Root hub */
 	struct usb_bus *hs_companion;	/* Companion EHCI bus, if any */
 	struct list_head bus_list;	/* list of busses */
-
-	struct mutex usb_address0_mutex; /* unaddressed device mutex */
 
 	int bandwidth_allocated;	/* on this bus: how much of the time
 					 * reserved for periodic (intr/iso)
@@ -1039,7 +1058,7 @@ struct usbdrv_wrap {
  *	for interfaces bound to this driver.
  * @soft_unbind: if set to 1, the USB core will not kill URBs and disable
  *	endpoints before calling the driver's disconnect method.
- * @disable_hub_initiated_lpm: if set to 0, the USB core will not allow hubs
+ * @disable_hub_initiated_lpm: if set to 1, the USB core will not allow hubs
  *	to initiate lower power link state transitions when an idle timeout
  *	occurs.  Device-initiated USB 3.0 link PM will still be allowed.
  *
@@ -1200,6 +1219,9 @@ extern int usb_disabled(void);
 
 /* The following flags are used internally by usbcore and HCDs */
 #define URB_DIR_IN		0x0200	/* Transfer from device to host */
+#ifdef CONFIG_HOST_COMPLIANT_TEST
+#define URB_HCD_DRIVER_TEST	0x0400  /* Do NOT hand back or free this URB. */
+#endif
 #define URB_DIR_OUT		0
 #define URB_DIR_MASK		URB_DIR_IN
 

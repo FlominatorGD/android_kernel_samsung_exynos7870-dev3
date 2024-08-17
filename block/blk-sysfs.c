@@ -84,14 +84,23 @@ static ssize_t
 queue_ra_store(struct request_queue *q, const char *page, size_t count)
 {
 	unsigned long ra_kb;
-	ssize_t ret = queue_var_store(&ra_kb, page, count);
+	ssize_t ret;
+	static const char temp[] = "temporary ";
+
+	/* IOPP-ra-v2.1.4.14 */
+	if (strncmp(page, temp, sizeof(temp) - 1) != 0)
+		return count;
+
+	page += sizeof(temp) - 1;
+
+	ret = queue_var_store(&ra_kb, page, count);
 
 	if (ret < 0)
 		return ret;
 
 	q->backing_dev_info.ra_pages = ra_kb >> (PAGE_CACHE_SHIFT - 10);
 
-	return ret;
+	return count;
 }
 
 static ssize_t queue_max_sectors_show(struct request_queue *q, char *page)
@@ -178,6 +187,7 @@ queue_max_sectors_store(struct request_queue *q, const char *page, size_t count)
 
 	spin_lock_irq(q->queue_lock);
 	q->limits.max_sectors = max_sectors_kb << 1;
+	q->backing_dev_info.io_pages = max_sectors_kb >> (PAGE_SHIFT - 10);
 	spin_unlock_irq(q->queue_lock);
 
 	return ret;
@@ -492,16 +502,14 @@ static void blk_free_queue_rcu(struct rcu_head *rcu_head)
  *     Currently, its primary task it to free all the &struct request
  *     structures that were allocated to the queue and the queue itself.
  *
- * Caveat:
- *     Hopefully the low level driver will have finished any
- *     outstanding requests first...
+ * Note:
+ *     The low level driver must have finished any outstanding requests first
+ *     via blk_cleanup_queue().
  **/
 static void blk_release_queue(struct kobject *kobj)
 {
 	struct request_queue *q =
 		container_of(kobj, struct request_queue, kobj);
-
-	blk_sync_queue(q);
 
 	blkcg_exit_queue(q);
 
@@ -517,9 +525,7 @@ static void blk_release_queue(struct kobject *kobj)
 	if (q->queue_tags)
 		__blk_queue_free_tags(q);
 
-	if (q->mq_ops)
-		blk_mq_free_queue(q);
-	else
+	if (!q->mq_ops)
 		blk_free_flush_queue(q->fq);
 
 	blk_trace_shutdown(q);

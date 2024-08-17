@@ -870,6 +870,16 @@ static int cx23885_dev_setup(struct cx23885_dev *dev)
 	if (cx23885_boards[dev->board].clk_freq > 0)
 		dev->clk_freq = cx23885_boards[dev->board].clk_freq;
 
+	if (dev->board == CX23885_BOARD_HAUPPAUGE_IMPACTVCBE &&
+		dev->pci->subsystem_device == 0x7137) {
+		/* Hauppauge ImpactVCBe device ID 0x7137 is populated
+		 * with an 888, and a 25Mhz crystal, instead of the
+		 * usual third overtone 50Mhz. The default clock rate must
+		 * be overridden so the cx25840 is properly configured
+		 */
+		dev->clk_freq = 25000000;
+	}
+
 	dev->pci_bus  = dev->pci->bus->number;
 	dev->pci_slot = PCI_SLOT(dev->pci->devfn);
 	cx23885_irq_add(dev, 0x001f00);
@@ -1078,7 +1088,7 @@ static __le32 *cx23885_risc_field(__le32 *rp, struct scatterlist *sglist,
 	for (line = 0; line < lines; line++) {
 		while (offset && offset >= sg_dma_len(sg)) {
 			offset -= sg_dma_len(sg);
-			sg++;
+			sg = sg_next(sg);
 		}
 
 		if (lpi && line > 0 && !(line % lpi))
@@ -1101,14 +1111,14 @@ static __le32 *cx23885_risc_field(__le32 *rp, struct scatterlist *sglist,
 			*(rp++) = cpu_to_le32(0); /* bits 63-32 */
 			todo -= (sg_dma_len(sg)-offset);
 			offset = 0;
-			sg++;
+			sg = sg_next(sg);
 			while (todo > sg_dma_len(sg)) {
 				*(rp++) = cpu_to_le32(RISC_WRITE|
 						    sg_dma_len(sg));
 				*(rp++) = cpu_to_le32(sg_dma_address(sg));
 				*(rp++) = cpu_to_le32(0); /* bits 63-32 */
 				todo -= sg_dma_len(sg);
-				sg++;
+				sg = sg_next(sg);
 			}
 			*(rp++) = cpu_to_le32(RISC_WRITE|RISC_EOL|todo);
 			*(rp++) = cpu_to_le32(sg_dma_address(sg));

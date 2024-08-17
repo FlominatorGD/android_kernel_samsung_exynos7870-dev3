@@ -15,6 +15,7 @@ void show_mem(unsigned int filter)
 	unsigned long total = 0, reserved = 0, highmem = 0;
 
 	printk("Mem-Info:\n");
+	show_mem_extra_call_notifiers();
 	show_free_areas(filter);
 
 	for_each_online_pgdat(pgdat) {
@@ -28,7 +29,7 @@ void show_mem(unsigned int filter)
 				continue;
 
 			total += zone->present_pages;
-			reserved = zone->present_pages - zone->managed_pages;
+			reserved += zone->present_pages - zone->managed_pages;
 
 			if (is_highmem_idx(zoneid))
 				highmem += zone->present_pages;

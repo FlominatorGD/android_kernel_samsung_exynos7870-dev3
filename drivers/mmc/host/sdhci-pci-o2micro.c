@@ -127,8 +127,6 @@ void sdhci_pci_o2_fujin2_pci_init(struct sdhci_pci_chip *chip)
 		return;
 	scratch_32 &= ~((1 << 21) | (1 << 30));
 
-	/* Set RTD3 function disabled */
-	scratch_32 |= ((1 << 29) | (1 << 28));
 	pci_write_config_dword(chip->pdev, O2_SD_FUNC_REG3, scratch_32);
 
 	/* Set L1 Entrance Timer */
@@ -338,6 +336,9 @@ int sdhci_pci_o2_probe(struct sdhci_pci_chip *chip)
 		pci_write_config_byte(chip->pdev, O2_SD_LOCK_WP, scratch);
 		break;
 	case PCI_DEVICE_ID_O2_SEABIRD0:
+		if (chip->pdev->revision == 0x01)
+			chip->quirks |= SDHCI_QUIRK_DELAY_AFTER_POWER;
+		/* fall through */
 	case PCI_DEVICE_ID_O2_SEABIRD1:
 		/* UnLock WP */
 		ret = pci_read_config_byte(chip->pdev,

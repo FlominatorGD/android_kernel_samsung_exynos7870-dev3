@@ -165,6 +165,9 @@ bool bio_integrity_enabled(struct bio *bio)
 	if (!bio_is_rw(bio))
 		return false;
 
+	if (!bio_sectors(bio))
+		return false;
+
 	/* Already protected? */
 	if (bio_integrity(bio))
 		return false;
@@ -216,9 +219,10 @@ static int bio_integrity_process(struct bio *bio,
 {
 	struct blk_integrity *bi = bdev_get_integrity(bio->bi_bdev);
 	struct blk_integrity_iter iter;
-	struct bio_vec *bv;
+	struct bvec_iter bviter;
+	struct bio_vec bv;
 	struct bio_integrity_payload *bip = bio_integrity(bio);
-	unsigned int i, ret = 0;
+	unsigned int ret = 0;
 	void *prot_buf = page_address(bip->bip_vec->bv_page) +
 		bip->bip_vec->bv_offset;
 
@@ -227,11 +231,11 @@ static int bio_integrity_process(struct bio *bio,
 	iter.seed = bip_get_seed(bip);
 	iter.prot_buf = prot_buf;
 
-	bio_for_each_segment_all(bv, bio, i) {
-		void *kaddr = kmap_atomic(bv->bv_page);
+	bio_for_each_segment(bv, bio, bviter) {
+		void *kaddr = kmap_atomic(bv.bv_page);
 
-		iter.data_buf = kaddr + bv->bv_offset;
-		iter.data_size = bv->bv_len;
+		iter.data_buf = kaddr + bv.bv_offset;
+		iter.data_size = bv.bv_len;
 
 		ret = proc_fn(&iter);
 		if (ret) {

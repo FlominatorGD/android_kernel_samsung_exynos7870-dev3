@@ -118,7 +118,10 @@ static const struct file_operations dw_spi_regs_ops = {
 
 static int dw_spi_debugfs_init(struct dw_spi *dws)
 {
-	dws->debugfs = debugfs_create_dir("dw_spi", NULL);
+	char name[128];
+
+	snprintf(name, 128, "dw_spi-%s", dev_name(&dws->master->dev));
+	dws->debugfs = debugfs_create_dir(name, NULL);
 	if (!dws->debugfs)
 		return -ENOMEM;
 
@@ -621,13 +624,13 @@ static void spi_hw_init(struct dw_spi *dws)
 	if (!dws->fifo_len) {
 		u32 fifo;
 
-		for (fifo = 2; fifo <= 257; fifo++) {
+		for (fifo = 2; fifo <= 256; fifo++) {
 			dw_writew(dws, DW_SPI_TXFLTR, fifo);
 			if (fifo != dw_readw(dws, DW_SPI_TXFLTR))
 				break;
 		}
 
-		dws->fifo_len = (fifo == 257) ? 0 : fifo;
+		dws->fifo_len = (fifo == 2) ? 0 : fifo - 1;
 		dw_writew(dws, DW_SPI_TXFLTR, 0);
 	}
 }

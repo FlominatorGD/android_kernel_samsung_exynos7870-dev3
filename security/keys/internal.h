@@ -117,6 +117,7 @@ struct keyring_search_context {
 #define KEYRING_SEARCH_NO_UPDATE_TIME	0x0004	/* Don't update times */
 #define KEYRING_SEARCH_NO_CHECK_PERM	0x0008	/* Don't check permissions */
 #define KEYRING_SEARCH_DETECT_TOO_DEEP	0x0010	/* Give an error on excessive depth */
+#define KEYRING_SEARCH_SKIP_EXPIRED	0x0020	/* Ignore expired keys (intention to replace) */
 
 	int (*iterator)(const void *object, void *iterator_data);
 
@@ -135,7 +136,7 @@ extern key_ref_t keyring_search_aux(key_ref_t keyring_ref,
 extern key_ref_t search_my_process_keyrings(struct keyring_search_context *ctx);
 extern key_ref_t search_process_keyrings(struct keyring_search_context *ctx);
 
-extern struct key *find_keyring_by_name(const char *name, bool skip_perm_check);
+extern struct key *find_keyring_by_name(const char *name, bool uid_keyring);
 
 extern int install_user_keyrings(void);
 extern int install_thread_keyring_to_cred(struct cred *);

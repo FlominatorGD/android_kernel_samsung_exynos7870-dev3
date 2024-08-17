@@ -479,7 +479,8 @@ void usb_stor_adjust_quirks(struct usb_device *udev, unsigned long *fflags)
 			US_FL_SINGLE_LUN | US_FL_NO_WP_DETECT |
 			US_FL_NO_READ_DISC_INFO | US_FL_NO_READ_CAPACITY_16 |
 			US_FL_INITIAL_READ10 | US_FL_WRITE_CACHE |
-			US_FL_NO_ATA_1X | US_FL_NO_REPORT_OPCODES);
+			US_FL_NO_ATA_1X | US_FL_NO_REPORT_OPCODES |
+			US_FL_MAX_SECTORS_240 | US_FL_NO_REPORT_LUNS);
 
 	p = quirks;
 	while (*p) {
@@ -520,11 +521,17 @@ void usb_stor_adjust_quirks(struct usb_device *udev, unsigned long *fflags)
 		case 'f':
 			f |= US_FL_NO_REPORT_OPCODES;
 			break;
+		case 'g':
+			f |= US_FL_MAX_SECTORS_240;
+			break;
 		case 'h':
 			f |= US_FL_CAPACITY_HEURISTICS;
 			break;
 		case 'i':
 			f |= US_FL_IGNORE_DEVICE;
+			break;
+		case 'j':
+			f |= US_FL_NO_REPORT_LUNS;
 			break;
 		case 'l':
 			f |= US_FL_NOT_LOCKABLE;
@@ -933,6 +940,9 @@ int usb_stor_probe1(struct us_data **pus,
 	/*
 	 * Allow 16-byte CDBs and thus > 2TB
 	 */
+#ifdef CONFIG_USB_STORAGE_DETECT
+	host->by_usb = 1;
+#endif
 	host->max_cmd_len = 16;
 	host->sg_tablesize = usb_stor_sg_tablesize(intf);
 	*pus = us = host_to_us(host);
@@ -1045,9 +1055,17 @@ EXPORT_SYMBOL_GPL(usb_stor_probe2);
 void usb_stor_disconnect(struct usb_interface *intf)
 {
 	struct us_data *us = usb_get_intfdata(intf);
-
+#ifdef CONFIG_USB_STORAGE_DETECT
+	pr_info("%s enter\n", __func__);
+#endif
 	quiesce_and_remove_host(us);
+#ifdef CONFIG_USB_STORAGE_DETECT
+	pr_info("%s doing\n", __func__);
+#endif
 	release_everything(us);
+#ifdef CONFIG_USB_STORAGE_DETECT
+	pr_info("%s exit\n", __func__);
+#endif
 }
 EXPORT_SYMBOL_GPL(usb_stor_disconnect);
 
@@ -1062,7 +1080,7 @@ static int storage_probe(struct usb_interface *intf,
 
 	/* If uas is enabled and this device can do uas then ignore it. */
 #if IS_ENABLED(CONFIG_USB_UAS)
-	if (uas_use_uas_driver(intf, id))
+	if (uas_use_uas_driver(intf, id, NULL))
 		return -ENXIO;
 #endif
 
